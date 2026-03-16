@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Distriar Repartidor</string>
+    <string name="login_title">Ingresar</string>
+    <string name="login_user">Usuario</string>
+    <string name="login_password">Contraseña</string>
+    <string name="login_action">Entrar</string>
+    <string name="login_error">Usuario o contraseña incorrecta</string>
+    <string name="route_title">Ruta del día</string>
+    <string name="history_title">Historial</string>
+    <string name="mark_delivered">Marcar entregado</string>
+    <string name="delivered">Entregado</string>
+    <string name="refresh">Actualizar</string>
+    <string name="next_stop">Siguiente entrega</string>
+    <string name="no_orders">No hay pedidos asignados</string>
+</resources>

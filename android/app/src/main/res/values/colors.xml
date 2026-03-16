@@ -1,0 +1,8 @@
+<resources>
+    <color name="orange_500">#FF6F00</color>
+    <color name="orange_700">#E65100</color>
+    <color name="slate_900">#0F172A</color>
+    <color name="slate_700">#334155</color>
+    <color name="slate_100">#F1F5F9</color>
+    <color name="white">#FFFFFF</color>
+</resources>
