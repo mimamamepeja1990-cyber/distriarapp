@@ -24,4 +24,8 @@ class DriverRepository(private val api: ApiService) {
     suspend fun sendLocation(token: String, loc: DriverLocationIn): DriverLocationOut {
         return api.postDriverLocation("Bearer $token", loc)
     }
+
+    suspend fun sendOffline(token: String) {
+        api.postDriverOffline("Bearer $token")
+    }
 }

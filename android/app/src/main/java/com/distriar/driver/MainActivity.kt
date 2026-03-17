@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var currentNextOrder: Order? = null
     private var lastCameraTarget: LatLng? = null
     private var lastCameraUpdateAt = 0L
+    private var offlineSent = false
 
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -149,6 +150,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         autoRefreshJob = null
     }
 
+    override fun onDestroy() {
+        if (isFinishing) {
+            sendOfflineSignal()
+        }
+        super.onDestroy()
+    }
+
     private fun ensureLoggedIn() {
         val token = tokenStore.getToken()
         if (token.isNullOrBlank()) {
@@ -185,11 +193,24 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun logout() {
+        sendOfflineSignal()
         tokenStore.clear()
         stopLocationUpdates()
         autoRefreshJob?.cancel()
         autoRefreshJob = null
         goToLogin()
+    }
+
+    private fun sendOfflineSignal() {
+        if (offlineSent) return
+        val token = tokenStore.getToken() ?: return
+        offlineSent = true
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { repo.sendOffline(token) }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun switchMode(mode: Mode) {

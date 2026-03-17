@@ -41,4 +41,9 @@ interface ApiService {
         @Header("Authorization") auth: String,
         @Body body: DriverLocationIn,
     ): DriverLocationOut
+
+    @POST("/admin/driver-location/offline")
+    suspend fun postDriverOffline(
+        @Header("Authorization") auth: String,
+    ): Map<String, Any>
 }
