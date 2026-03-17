@@ -26,6 +26,7 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
 import com.google.android.gms.maps.MapsInitializer
 import com.google.android.gms.common.ConnectionResult
@@ -45,6 +46,12 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var googleMap: GoogleMap? = null
     private var driverMarker: Marker? = null
     private var mapLoaded = false
+    private var routeLine: Polyline? = null
+    private var lastRouteKey: String? = null
+    private var lastRouteFetchAt = 0L
+    private var routeJob: Job? = null
+    private var lastLocation: Location? = null
+    private var currentNextOrder: Order? = null
 
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -186,6 +193,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 currentOrders = orders
                 val nextOrder = orders.firstOrNull { !orderIsDelivered(it) }
                 val nextId = nextOrder?.id
+                currentNextOrder = nextOrder
                 adapter.updateOrders(orders, nextId)
                 binding.emptyView.visibility = if (orders.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
                 binding.nextStop.text = buildString {
@@ -200,6 +208,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                     binding.nextStopAddress.visibility = android.view.View.GONE
                 }
                 updateMap(orders, nextOrder)
+                updateRoutePolyline(nextOrder)
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "No se pudieron cargar pedidos", Toast.LENGTH_SHORT).show()
             } finally {
@@ -250,6 +259,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val map = googleMap ?: return
         map.clear()
         driverMarker = null
+        routeLine?.remove()
+        routeLine = null
 
         val depot = LatLng(AppConfig.DEPOT_LAT, AppConfig.DEPOT_LON)
         map.addMarker(
@@ -334,6 +345,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun showMapStatus(message: String) {
+        if (message.isBlank()) {
+            binding.mapStatus.text = ""
+            binding.mapStatus.visibility = android.view.View.GONE
+            return
+        }
         binding.mapStatus.text = message
         binding.mapStatus.visibility = android.view.View.VISIBLE
     }
@@ -368,6 +384,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     }
 
     private fun handleLocation(location: Location) {
+        lastLocation = location
         updateDriverMarker(location)
         val now = System.currentTimeMillis()
         if (now - lastLocationSentAt < AppConfig.LOCATION_PUSH_INTERVAL_MS) return
@@ -389,6 +406,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             } catch (_: Exception) {
             }
         }
+        if (currentMode == Mode.ROUTE) {
+            updateRoutePolyline(currentNextOrder)
+        }
     }
 
     private fun updateDriverMarker(location: Location) {
@@ -403,6 +423,47 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             )
         } else {
             driverMarker?.position = pos
+        }
+    }
+
+    private fun updateRoutePolyline(nextOrder: Order?) {
+        val map = googleMap ?: return
+        if (nextOrder == null) {
+            routeLine?.remove()
+            routeLine = null
+            return
+        }
+        val destLat = nextOrder.deliveryLat
+        val destLon = nextOrder.deliveryLon
+        if (destLat == null || destLon == null) {
+            showMapStatus("Sin coordenadas del destino.")
+            return
+        }
+        val origin = lastLocation?.let { LatLng(it.latitude, it.longitude) }
+            ?: LatLng(AppConfig.DEPOT_LAT, AppConfig.DEPOT_LON)
+        val dest = LatLng(destLat, destLon)
+
+        val key = "${origin.latitude},${origin.longitude}|${dest.latitude},${dest.longitude}"
+        val now = System.currentTimeMillis()
+        if (key == lastRouteKey && now - lastRouteFetchAt < 20000) return
+        lastRouteKey = key
+        lastRouteFetchAt = now
+
+        routeJob?.cancel()
+        routeJob = lifecycleScope.launch {
+            val points = withContext(Dispatchers.IO) { DirectionsClient.fetchRoute(this@MainActivity, origin, dest) }
+            if (points.isNotEmpty()) {
+                showMapStatus("")
+                routeLine?.remove()
+                routeLine = map.addPolyline(
+                    PolylineOptions()
+                        .addAll(points)
+                        .color(0xFF2563EB.toInt())
+                        .width(8f)
+                )
+            } else {
+                showMapStatus("No se pudo calcular la ruta. Verificá Directions API.")
+            }
         }
     }
 
