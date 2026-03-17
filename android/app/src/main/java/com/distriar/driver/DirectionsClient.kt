@@ -17,13 +17,20 @@ object DirectionsClient {
         .build()
     private val gson = Gson()
 
-    suspend fun fetchRoute(context: Context, origin: LatLng, destination: LatLng): List<LatLng> {
+    suspend fun fetchRoute(context: Context, origin: LatLng, destination: LatLng?, destinationAddress: String? = null): RouteResult {
         val key = context.getString(R.string.google_maps_key)
-        if (key.isBlank() || key == "REEMPLAZA_CON_TU_KEY") return emptyList()
+        if (key.isBlank() || key == "REEMPLAZA_CON_TU_KEY") return RouteResult(emptyList(), null, "missing_key")
+
+        val destParam = when {
+            destination != null -> "${destination.latitude},${destination.longitude}"
+            !destinationAddress.isNullOrBlank() -> destinationAddress
+            else -> null
+        }
+        if (destParam == null) return RouteResult(emptyList(), null, "missing_destination")
 
         val url = "https://maps.googleapis.com/maps/api/directions/json" +
             "?origin=${origin.latitude},${origin.longitude}" +
-            "&destination=${destination.latitude},${destination.longitude}" +
+            "&destination=${encode(destParam)}" +
             "&mode=driving" +
             "&key=${key}"
 
@@ -37,15 +44,21 @@ object DirectionsClient {
 
         return try {
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return emptyList()
-                val body = resp.body?.string() ?: return emptyList()
+                if (!resp.isSuccessful) return RouteResult(emptyList(), null, "http_${resp.code}")
+                val body = resp.body?.string() ?: return RouteResult(emptyList(), null, "empty_body")
                 val parsed = gson.fromJson(body, DirectionsResponse::class.java)
-                val poly = parsed.routes?.firstOrNull()?.overview_polyline?.points ?: return emptyList()
-                decodePolyline(poly)
+                val status = parsed.status ?: "unknown"
+                if (status != "OK") return RouteResult(emptyList(), null, status)
+                val route = parsed.routes?.firstOrNull()
+                val poly = route?.overview_polyline?.points ?: return RouteResult(emptyList(), null, "no_polyline")
+                val end = route.legs?.firstOrNull()?.end_location?.let { loc ->
+                    if (loc.lat != null && loc.lng != null) LatLng(loc.lat, loc.lng) else null
+                }
+                RouteResult(decodePolyline(poly), end, status)
             }
         } catch (e: Exception) {
             Log.w("DirectionsClient", "Directions fetch failed", e)
-            emptyList()
+            RouteResult(emptyList(), null, "exception")
         }
     }
 
@@ -97,14 +110,35 @@ object DirectionsClient {
     }
 
     data class DirectionsResponse(
+        val status: String?,
         val routes: List<DirectionsRoute>?
     )
 
     data class DirectionsRoute(
-        val overview_polyline: OverviewPolyline?
+        val overview_polyline: OverviewPolyline?,
+        val legs: List<DirectionsLeg>?
     )
 
     data class OverviewPolyline(
         val points: String?
     )
+
+    data class DirectionsLeg(
+        val end_location: LatLngLiteral?
+    )
+
+    data class LatLngLiteral(
+        val lat: Double?,
+        val lng: Double?
+    )
+
+    data class RouteResult(
+        val points: List<LatLng>,
+        val resolvedDestination: LatLng?,
+        val status: String?
+    )
+
+    private fun encode(value: String): String {
+        return java.net.URLEncoder.encode(value, "UTF-8")
+    }
 }

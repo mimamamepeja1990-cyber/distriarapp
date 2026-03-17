@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private var googleMap: GoogleMap? = null
     private var driverMarker: Marker? = null
+    private var destMarker: Marker? = null
     private var mapLoaded = false
     private var routeLine: Polyline? = null
     private var lastRouteKey: String? = null
@@ -259,6 +260,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val map = googleMap ?: return
         map.clear()
         driverMarker = null
+        destMarker = null
         routeLine?.remove()
         routeLine = null
 
@@ -435,15 +437,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
         val destLat = nextOrder.deliveryLat
         val destLon = nextOrder.deliveryLon
-        if (destLat == null || destLon == null) {
-            showMapStatus("Sin coordenadas del destino.")
-            return
+        val addressFallback = if (destLat == null || destLon == null) {
+            formatAddressForDirections(nextOrder)
+        } else {
+            null
         }
         val origin = lastLocation?.let { LatLng(it.latitude, it.longitude) }
             ?: LatLng(AppConfig.DEPOT_LAT, AppConfig.DEPOT_LON)
-        val dest = LatLng(destLat, destLon)
+        val dest = if (destLat != null && destLon != null) LatLng(destLat, destLon) else null
 
-        val key = "${origin.latitude},${origin.longitude}|${dest.latitude},${dest.longitude}"
+        val key = "${origin.latitude},${origin.longitude}|${destLat ?: "addr"}|${destLon ?: "addr"}"
         val now = System.currentTimeMillis()
         if (key == lastRouteKey && now - lastRouteFetchAt < 20000) return
         lastRouteKey = key
@@ -451,18 +454,30 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         routeJob?.cancel()
         routeJob = lifecycleScope.launch {
-            val points = withContext(Dispatchers.IO) { DirectionsClient.fetchRoute(this@MainActivity, origin, dest) }
-            if (points.isNotEmpty()) {
+            val result = withContext(Dispatchers.IO) {
+                DirectionsClient.fetchRoute(this@MainActivity, origin, dest, addressFallback)
+            }
+            if (result.points.isNotEmpty()) {
                 showMapStatus("")
                 routeLine?.remove()
                 routeLine = map.addPolyline(
                     PolylineOptions()
-                        .addAll(points)
+                        .addAll(result.points)
                         .color(0xFF2563EB.toInt())
                         .width(8f)
                 )
+                if (dest == null && result.resolvedDestination != null) {
+                    destMarker?.remove()
+                    destMarker = map.addMarker(
+                        MarkerOptions()
+                            .position(result.resolvedDestination)
+                            .title("Destino")
+                            .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE))
+                    )
+                }
             } else {
-                showMapStatus("No se pudo calcular la ruta. Verificá Directions API.")
+                val msg = result.status ?: "Direcciones no disponibles"
+                showMapStatus("Ruta no disponible: $msg")
             }
         }
     }
