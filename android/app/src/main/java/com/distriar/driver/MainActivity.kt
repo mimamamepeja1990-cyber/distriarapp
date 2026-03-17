@@ -1,22 +1,26 @@
 package com.distriar.driver
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.distriar.driver.databinding.ActivityMainBinding
+import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.LocationSettingsRequest
 import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
@@ -46,10 +50,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var googleMap: GoogleMap? = null
     private var driverMarker: Marker? = null
     private var destMarker: Marker? = null
+    private var depotMarker: Marker? = null
+    private val orderMarkers = mutableMapOf<Int, Marker>()
     private var mapLoaded = false
     private var routeLine: Polyline? = null
-    private var lastRouteKey: String? = null
     private var lastRouteFetchAt = 0L
+    private var lastRouteOrigin: Location? = null
+    private var lastRouteDestKey: String? = null
     private var routeJob: Job? = null
     private var lastLocation: Location? = null
     private var currentNextOrder: Order? = null
@@ -69,10 +76,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     ) { result ->
         val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true
         if (granted) {
+            ensureLocationSettings()
+        } else {
+            Toast.makeText(this, "Permiso de ubicación requerido", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private val locationSettingsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
             startLocationUpdates()
             try { googleMap?.isMyLocationEnabled = true } catch (_: Exception) { }
         } else {
-            Toast.makeText(this, "Permiso de ubicación requerido", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Activá la ubicación para ver la ruta", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -191,15 +208,37 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                         Mode.HISTORY -> repo.listDeliveredOrders(token)
                     }
                 }
-                currentOrders = orders
-                val nextOrder = orders.firstOrNull { !orderIsDelivered(it) }
+                val displayOrders = if (currentMode == Mode.ROUTE) {
+                    orders.filter { !orderIsDelivered(it) }
+                } else {
+                    orders
+                }
+                currentOrders = displayOrders
+                val nextOrder = displayOrders.firstOrNull()
                 val nextId = nextOrder?.id
                 currentNextOrder = nextOrder
-                adapter.updateOrders(orders, nextId)
-                binding.emptyView.visibility = if (orders.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+                adapter.updateOrders(displayOrders, nextId)
+                if (displayOrders.isEmpty()) {
+                    binding.emptyView.text = if (currentMode == Mode.ROUTE) {
+                        getString(R.string.all_deliveries_done)
+                    } else {
+                        getString(R.string.no_orders)
+                    }
+                    binding.emptyView.visibility = android.view.View.VISIBLE
+                    binding.ordersList.visibility = android.view.View.GONE
+                } else {
+                    binding.emptyView.visibility = android.view.View.GONE
+                    binding.ordersList.visibility = android.view.View.VISIBLE
+                }
                 binding.nextStop.text = buildString {
-                    append(getString(R.string.next_stop))
-                    if (nextId != null) append(": #$nextId")
+                    if (nextId != null) {
+                        append(getString(R.string.next_stop))
+                        append(": #$nextId")
+                    } else if (currentMode == Mode.ROUTE) {
+                        append(getString(R.string.all_deliveries_done))
+                    } else {
+                        append(getString(R.string.next_stop))
+                    }
                 }
                 if (nextOrder != null) {
                     binding.nextStopAddress.text = formatAddress(nextOrder)
@@ -253,62 +292,70 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         map.moveCamera(CameraUpdateFactory.newLatLngZoom(depot, 12f))
         val nextOrder = currentOrders.firstOrNull { !orderIsDelivered(it) }
         updateMap(currentOrders, nextOrder)
+        updateRoutePolyline(nextOrder)
         showMapTimeoutFallback()
     }
 
     private fun updateMap(orders: List<Order>, nextOrder: Order?) {
         val map = googleMap ?: return
-        map.clear()
-        driverMarker = null
-        destMarker = null
-        routeLine?.remove()
-        routeLine = null
-
         val depot = LatLng(AppConfig.DEPOT_LAT, AppConfig.DEPOT_LON)
-        map.addMarker(
-            MarkerOptions()
-                .position(depot)
-                .title("Depósito")
-                .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_ORANGE))
-        )
+        if (depotMarker == null) {
+            depotMarker = map.addMarker(
+                MarkerOptions()
+                    .position(depot)
+                    .title("Depósito")
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_ORANGE))
+            )
+        } else {
+            depotMarker?.position = depot
+        }
 
         val points = mutableListOf<LatLng>()
         points.add(depot)
 
+        val keepIds = mutableSetOf<Int>()
         orders.forEach { order ->
             val lat = order.deliveryLat
             val lon = order.deliveryLon
             if (lat != null && lon != null) {
                 val pos = LatLng(lat, lon)
                 points.add(pos)
+                keepIds.add(order.id)
                 val hue = when {
                     nextOrder != null && order.id == nextOrder.id -> BitmapDescriptorFactory.HUE_AZURE
                     orderIsDelivered(order) -> BitmapDescriptorFactory.HUE_GREEN
                     else -> BitmapDescriptorFactory.HUE_RED
                 }
-                map.addMarker(
-                    MarkerOptions()
-                        .position(pos)
-                        .title("Pedido #${order.id}")
-                        .snippet(formatAddress(order))
-                        .icon(BitmapDescriptorFactory.defaultMarker(hue))
-                )
+                val marker = orderMarkers[order.id]
+                if (marker == null) {
+                    orderMarkers[order.id] = map.addMarker(
+                        MarkerOptions()
+                            .position(pos)
+                            .title("Pedido #${order.id}")
+                            .snippet(formatAddress(order))
+                            .icon(BitmapDescriptorFactory.defaultMarker(hue))
+                    )!!
+                } else {
+                    marker.position = pos
+                    marker.title = "Pedido #${order.id}"
+                    marker.snippet = formatAddress(order)
+                    marker.setIcon(BitmapDescriptorFactory.defaultMarker(hue))
+                }
             }
         }
-
-        if (points.size > 1) {
-            val polyline = PolylineOptions()
-                .addAll(points)
-                .color(0xFF2563EB.toInt())
-                .width(6f)
-            map.addPolyline(polyline)
+        // remove markers for orders no longer in list
+        val toRemove = orderMarkers.keys.filter { it !in keepIds }
+        toRemove.forEach { id ->
+            orderMarkers[id]?.remove()
+            orderMarkers.remove(id)
         }
 
         val focus = nextOrder?.let { ord ->
             val lat = ord.deliveryLat
             val lon = ord.deliveryLon
             if (lat != null && lon != null) LatLng(lat, lon) else null
-        } ?: points.firstOrNull()
+        } ?: lastLocation?.let { LatLng(it.latitude, it.longitude) }
+        ?: points.firstOrNull()
         if (focus != null) {
             map.animateCamera(CameraUpdateFactory.newLatLngZoom(focus, 13f))
         }
@@ -317,14 +364,36 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun ensureLocationPermission() {
         val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
         if (fine == PackageManager.PERMISSION_GRANTED) {
-            startLocationUpdates()
-            try { googleMap?.isMyLocationEnabled = true } catch (_: Exception) { }
+            ensureLocationSettings()
         } else {
             permissionLauncher.launch(arrayOf(
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION,
             ))
         }
+    }
+
+    private fun ensureLocationSettings() {
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, AppConfig.LOCATION_PUSH_INTERVAL_MS)
+            .setMinUpdateIntervalMillis(4000)
+            .build()
+        val builder = LocationSettingsRequest.Builder()
+            .addLocationRequest(request)
+            .setAlwaysShow(true)
+        val client = LocationServices.getSettingsClient(this)
+        client.checkLocationSettings(builder.build())
+            .addOnSuccessListener {
+                startLocationUpdates()
+                try { googleMap?.isMyLocationEnabled = true } catch (_: Exception) { }
+            }
+            .addOnFailureListener { ex ->
+                if (ex is ResolvableApiException) {
+                    val intentSender = IntentSenderRequest.Builder(ex.resolution).build()
+                    locationSettingsLauncher.launch(intentSender)
+                } else {
+                    Toast.makeText(this, "Activá la ubicación para continuar", Toast.LENGTH_LONG).show()
+                }
+            }
     }
 
     private fun checkMapsAvailability() {
@@ -367,6 +436,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private fun startLocationUpdates() {
         if (locationCallback != null) return
+        // Seed with last known location to avoid routing from depot when GPS is available.
+        try {
+            locationClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    lastLocation = loc
+                    updateDriverMarker(loc)
+                    if (currentMode == Mode.ROUTE) {
+                        updateRoutePolyline(currentNextOrder)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, AppConfig.LOCATION_PUSH_INTERVAL_MS)
             .setMinUpdateIntervalMillis(4000)
             .build()
@@ -435,6 +517,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             routeLine = null
             return
         }
+        val originLoc = lastLocation
+        if (originLoc == null) {
+            showMapStatus("Esperando ubicación del repartidor para calcular la ruta.")
+            return
+        }
         val destLat = nextOrder.deliveryLat
         val destLon = nextOrder.deliveryLon
         val addressFallback = if (destLat == null || destLon == null) {
@@ -442,14 +529,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         } else {
             null
         }
-        val origin = lastLocation?.let { LatLng(it.latitude, it.longitude) }
-            ?: LatLng(AppConfig.DEPOT_LAT, AppConfig.DEPOT_LON)
+        val origin = LatLng(originLoc.latitude, originLoc.longitude)
         val dest = if (destLat != null && destLon != null) LatLng(destLat, destLon) else null
-
-        val key = "${origin.latitude},${origin.longitude}|${destLat ?: "addr"}|${destLon ?: "addr"}"
+        val destKey = if (dest != null) {
+            "${dest.latitude},${dest.longitude}"
+        } else {
+            "addr:${addressFallback ?: ""}"
+        }
         val now = System.currentTimeMillis()
-        if (key == lastRouteKey && now - lastRouteFetchAt < 20000) return
-        lastRouteKey = key
+        val movedMeters = lastRouteOrigin?.distanceTo(originLoc) ?: Float.MAX_VALUE
+        val destChanged = destKey != lastRouteDestKey
+        val elapsed = now - lastRouteFetchAt
+        val shouldSkip = !destChanged && movedMeters < 30f && elapsed < 15000 && routeLine != null
+        if (shouldSkip) return
+        lastRouteOrigin = originLoc
+        lastRouteDestKey = destKey
         lastRouteFetchAt = now
 
         routeJob?.cancel()
