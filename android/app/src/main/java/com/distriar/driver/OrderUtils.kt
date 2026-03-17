@@ -25,6 +25,20 @@ fun formatAddressForDirections(order: Order): String {
     if (street.isNotEmpty()) parts.add(street)
     order.userBarrio?.takeIf { it.isNotBlank() }?.let { parts.add(it.trim()) }
     order.userDepartment?.takeIf { it.isNotBlank() }?.let { parts.add(it.trim()) }
-    if (parts.isNotEmpty()) parts.add("Mendoza, Argentina")
-    return parts.joinToString(", ")
+    if (parts.isNotEmpty()) {
+        parts.add("Mendoza, Argentina")
+        return parts.joinToString(", ")
+    }
+    val mapsQuery = extractMapsQuery(order.mapsUrl)
+    return mapsQuery ?: ""
+}
+
+private fun extractMapsQuery(url: String?): String? {
+    if (url.isNullOrBlank()) return null
+    return try {
+        val uri = android.net.Uri.parse(url)
+        uri.getQueryParameter("query") ?: uri.getQueryParameter("destination")
+    } catch (_: Exception) {
+        null
+    }
 }

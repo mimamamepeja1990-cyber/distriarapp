@@ -10,7 +10,11 @@ import java.util.concurrent.TimeUnit
 object ApiClient {
     fun create(tokenProvider: () -> String?): ApiService {
         val logger = HttpLoggingInterceptor()
-        logger.level = HttpLoggingInterceptor.Level.BASIC
+        logger.level = if (BuildConfig.DEBUG) {
+            HttpLoggingInterceptor.Level.BASIC
+        } else {
+            HttpLoggingInterceptor.Level.NONE
+        }
 
         val authInterceptor = Interceptor { chain ->
             val token = tokenProvider()

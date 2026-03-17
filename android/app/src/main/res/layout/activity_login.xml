@@ -70,6 +70,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:hint="@string/login_user"
+                    android:textColor="@color/slate_900"
+                    android:textColorHint="@color/slate_500"
                     android:inputType="text" />
             </com.google.android.material.textfield.TextInputLayout>
 
@@ -87,6 +89,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:hint="@string/login_password"
+                    android:textColor="@color/slate_900"
+                    android:textColorHint="@color/slate_500"
                     android:inputType="textPassword" />
             </com.google.android.material.textfield.TextInputLayout>
 

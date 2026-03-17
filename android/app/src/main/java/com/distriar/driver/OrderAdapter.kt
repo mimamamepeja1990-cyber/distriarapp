@@ -3,6 +3,7 @@ package com.distriar.driver
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.distriar.driver.databinding.ItemOrderBinding
 
@@ -13,16 +14,43 @@ class OrderAdapter(
 
     private var nextOrderId: Int? = null
 
+    init {
+        setHasStableIds(true)
+    }
+
     fun updateOrders(newOrders: List<Order>, nextId: Int?) {
+        val oldOrders = orders
+        val oldNextId = nextOrderId
+        val newNextId = nextId
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldOrders.size
+
+            override fun getNewListSize(): Int = newOrders.size
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldOrders[oldItemPosition].id == newOrders[newItemPosition].id
+            }
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val oldItem = oldOrders[oldItemPosition]
+                val newItem = newOrders[newItemPosition]
+                val sameData = oldItem == newItem
+                val oldHighlight = oldItem.id == oldNextId
+                val newHighlight = newItem.id == newNextId
+                return sameData && oldHighlight == newHighlight
+            }
+        })
         orders = newOrders
-        nextOrderId = nextId
-        notifyDataSetChanged()
+        nextOrderId = newNextId
+        diff.dispatchUpdatesTo(this)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): OrderViewHolder {
         val binding = ItemOrderBinding.inflate(LayoutInflater.from(parent.context), parent, false)
         return OrderViewHolder(binding)
     }
+
+    override fun getItemId(position: Int): Long = orders[position].id.toLong()
 
     override fun onBindViewHolder(holder: OrderViewHolder, position: Int) {
         holder.bind(orders[position], nextOrderId, onDelivered)

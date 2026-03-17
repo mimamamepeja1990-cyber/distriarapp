@@ -60,6 +60,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var routeJob: Job? = null
     private var lastLocation: Location? = null
     private var currentNextOrder: Order? = null
+    private var lastCameraTarget: LatLng? = null
+    private var lastCameraUpdateAt = 0L
 
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -107,6 +109,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
         binding.ordersList.layoutManager = LinearLayoutManager(this)
         binding.ordersList.adapter = adapter
+        binding.ordersList.setHasFixedSize(true)
+        binding.ordersList.itemAnimator = null
+        binding.ordersList.setItemViewCacheSize(8)
 
         binding.btnRoute.setOnClickListener {
             switchMode(Mode.ROUTE)
@@ -116,6 +121,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
         binding.btnRefresh.setOnClickListener {
             loadOrders(force = true)
+        }
+        binding.btnLogout.setOnClickListener {
+            logout()
         }
         binding.btnRoute.isEnabled = false
 
@@ -174,6 +182,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun goToLogin() {
         startActivity(Intent(this, LoginActivity::class.java))
         finish()
+    }
+
+    private fun logout() {
+        tokenStore.clear()
+        stopLocationUpdates()
+        autoRefreshJob?.cancel()
+        autoRefreshJob = null
+        goToLogin()
     }
 
     private fun switchMode(mode: Mode) {
@@ -272,6 +288,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     override fun onMapReady(map: GoogleMap) {
         googleMap = map
         map.uiSettings.isZoomControlsEnabled = true
+        map.uiSettings.isCompassEnabled = false
+        map.uiSettings.isIndoorLevelPickerEnabled = false
+        map.uiSettings.isMyLocationButtonEnabled = false
         map.uiSettings.isMapToolbarEnabled = false
         try {
             MapsInitializer.initialize(applicationContext, MapsInitializer.Renderer.LATEST) {}
@@ -315,32 +334,29 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
         val keepIds = mutableSetOf<Int>()
         orders.forEach { order ->
-            val lat = order.deliveryLat
-            val lon = order.deliveryLon
-            if (lat != null && lon != null) {
-                val pos = LatLng(lat, lon)
-                points.add(pos)
-                keepIds.add(order.id)
-                val hue = when {
-                    nextOrder != null && order.id == nextOrder.id -> BitmapDescriptorFactory.HUE_AZURE
-                    orderIsDelivered(order) -> BitmapDescriptorFactory.HUE_GREEN
-                    else -> BitmapDescriptorFactory.HUE_RED
-                }
-                val marker = orderMarkers[order.id]
-                if (marker == null) {
-                    orderMarkers[order.id] = map.addMarker(
-                        MarkerOptions()
-                            .position(pos)
-                            .title("Pedido #${order.id}")
-                            .snippet(formatAddress(order))
-                            .icon(BitmapDescriptorFactory.defaultMarker(hue))
-                    )!!
-                } else {
-                    marker.position = pos
-                    marker.title = "Pedido #${order.id}"
-                    marker.snippet = formatAddress(order)
-                    marker.setIcon(BitmapDescriptorFactory.defaultMarker(hue))
-                }
+            val pos = resolveOrderLatLng(order)
+            if (pos == null) return@forEach
+            points.add(pos)
+            keepIds.add(order.id)
+            val hue = when {
+                nextOrder != null && order.id == nextOrder.id -> BitmapDescriptorFactory.HUE_AZURE
+                orderIsDelivered(order) -> BitmapDescriptorFactory.HUE_GREEN
+                else -> BitmapDescriptorFactory.HUE_RED
+            }
+            val marker = orderMarkers[order.id]
+            if (marker == null) {
+                orderMarkers[order.id] = map.addMarker(
+                    MarkerOptions()
+                        .position(pos)
+                        .title("Pedido #${order.id}")
+                        .snippet(formatAddress(order))
+                        .icon(BitmapDescriptorFactory.defaultMarker(hue))
+                )!!
+            } else {
+                marker.position = pos
+                marker.title = "Pedido #${order.id}"
+                marker.snippet = formatAddress(order)
+                marker.setIcon(BitmapDescriptorFactory.defaultMarker(hue))
             }
         }
         // remove markers for orders no longer in list
@@ -350,15 +366,46 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             orderMarkers.remove(id)
         }
 
-        val focus = nextOrder?.let { ord ->
-            val lat = ord.deliveryLat
-            val lon = ord.deliveryLon
-            if (lat != null && lon != null) LatLng(lat, lon) else null
-        } ?: lastLocation?.let { LatLng(it.latitude, it.longitude) }
+        val focus = nextOrder?.let { resolveOrderLatLng(it) }
+        ?: lastLocation?.let { LatLng(it.latitude, it.longitude) }
         ?: points.firstOrNull()
-        if (focus != null) {
+        if (focus != null && shouldUpdateCamera(focus)) {
             map.animateCamera(CameraUpdateFactory.newLatLngZoom(focus, 13f))
         }
+    }
+
+    private fun shouldUpdateCamera(target: LatLng): Boolean {
+        val prev = lastCameraTarget
+        if (prev == null) {
+            lastCameraTarget = target
+            lastCameraUpdateAt = System.currentTimeMillis()
+            return true
+        }
+        val results = FloatArray(1)
+        Location.distanceBetween(prev.latitude, prev.longitude, target.latitude, target.longitude, results)
+        val moved = results[0]
+        val elapsed = System.currentTimeMillis() - lastCameraUpdateAt
+        val shouldMove = moved > 80f || elapsed > 30000
+        if (shouldMove) {
+            lastCameraTarget = target
+            lastCameraUpdateAt = System.currentTimeMillis()
+        }
+        return shouldMove
+    }
+
+    private fun resolveOrderLatLng(order: Order): LatLng? {
+        val lat = order.deliveryLat
+        val lon = order.deliveryLon
+        if (lat != null && lon != null) {
+            if (isMendozaPoint(lat, lon)) return LatLng(lat, lon)
+            if (isMendozaPoint(lon, lat)) return LatLng(lon, lat)
+        }
+        return null
+    }
+
+    private fun isMendozaPoint(lat: Double, lon: Double): Boolean {
+        return lat in AppConfig.MENDOZA_MIN_LAT..AppConfig.MENDOZA_MAX_LAT &&
+            lon in AppConfig.MENDOZA_MIN_LON..AppConfig.MENDOZA_MAX_LON
     }
 
     private fun ensureLocationPermission() {
@@ -522,15 +569,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             showMapStatus("Esperando ubicación del repartidor para calcular la ruta.")
             return
         }
-        val destLat = nextOrder.deliveryLat
-        val destLon = nextOrder.deliveryLon
-        val addressFallback = if (destLat == null || destLon == null) {
+        val dest = resolveOrderLatLng(nextOrder)
+        val addressFallback = if (dest == null) {
             formatAddressForDirections(nextOrder)
         } else {
             null
         }
         val origin = LatLng(originLoc.latitude, originLoc.longitude)
-        val dest = if (destLat != null && destLon != null) LatLng(destLat, destLon) else null
         val destKey = if (dest != null) {
             "${dest.latitude},${dest.longitude}"
         } else {
