@@ -27,6 +27,9 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.PolylineOptions
+import com.google.android.gms.maps.MapsInitializer
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,6 +44,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     private var googleMap: GoogleMap? = null
     private var driverMarker: Marker? = null
+    private var mapLoaded = false
 
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -96,6 +100,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         locationClient = LocationServices.getFusedLocationProviderClient(this)
 
         ensureLoggedIn()
+        checkMapsAvailability()
     }
 
     override fun onStart() {
@@ -218,6 +223,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     override fun onMapReady(map: GoogleMap) {
         googleMap = map
         map.uiSettings.isZoomControlsEnabled = true
+        map.uiSettings.isMapToolbarEnabled = false
+        try {
+            MapsInitializer.initialize(applicationContext, MapsInitializer.Renderer.LATEST) {}
+        } catch (_: Exception) {
+        }
         try {
             val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             if (fine == PackageManager.PERMISSION_GRANTED) {
@@ -225,10 +235,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             }
         } catch (_: Exception) {
         }
+        map.setOnMapLoadedCallback {
+            mapLoaded = true
+            binding.mapStatus.visibility = android.view.View.GONE
+        }
         val depot = LatLng(AppConfig.DEPOT_LAT, AppConfig.DEPOT_LON)
         map.moveCamera(CameraUpdateFactory.newLatLngZoom(depot, 12f))
         val nextOrder = currentOrders.firstOrNull { !orderIsDelivered(it) }
         updateMap(currentOrders, nextOrder)
+        showMapTimeoutFallback()
     }
 
     private fun updateMap(orders: List<Order>, nextOrder: Order?) {
@@ -296,6 +311,39 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 Manifest.permission.ACCESS_FINE_LOCATION,
                 Manifest.permission.ACCESS_COARSE_LOCATION,
             ))
+        }
+    }
+
+    private fun checkMapsAvailability() {
+        val key = getString(R.string.google_maps_key)
+        if (key.isBlank() || key == "REEMPLAZA_CON_TU_KEY") {
+            showMapStatus("Falta la API key de Google Maps.")
+            return
+        }
+        val availability = GoogleApiAvailability.getInstance()
+        val status = availability.isGooglePlayServicesAvailable(this)
+        if (status != ConnectionResult.SUCCESS) {
+            showMapStatus("Google Play Services no disponible. Actualizá o usá un emulador con Google Play.")
+            try {
+                if (availability.isUserResolvableError(status)) {
+                    availability.getErrorDialog(this, status, 9001)?.show()
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun showMapStatus(message: String) {
+        binding.mapStatus.text = message
+        binding.mapStatus.visibility = android.view.View.VISIBLE
+    }
+
+    private fun showMapTimeoutFallback() {
+        lifecycleScope.launch {
+            delay(5000)
+            if (!mapLoaded) {
+                showMapStatus("Mapa sin cargar. Revisá la API key, SHA‑1 y billing en Google Cloud.")
+            }
         }
     }
 

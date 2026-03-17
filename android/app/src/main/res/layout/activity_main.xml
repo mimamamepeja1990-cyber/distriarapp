@@ -95,6 +95,17 @@
                 android:name="com.google.android.gms.maps.SupportMapFragment"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
+
+            <TextView
+                android:id="@+id/mapStatus"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:padding="16dp"
+                android:textColor="@color/slate_700"
+                android:textSize="14sp"
+                android:text=""
+                android:visibility="gone" />
         </FrameLayout>
     </com.google.android.material.card.MaterialCardView>
 
