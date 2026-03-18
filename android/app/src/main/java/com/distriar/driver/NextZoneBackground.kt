@@ -61,12 +61,12 @@ object NextZoneNotifier {
         if (key == lastShown) return false
 
         val body = notice?.message?.takeIf { it.isNotBlank() } ?: "Manana te toca la zona $zone."
-        showNotification(context, zone, deliveryDate, body)
+        showNotification(context, deliveryDate, body)
         prefs.edit().putString(KEY_LAST_ZONE_NOTICE, key).apply()
         return true
     }
 
-    private fun showNotification(context: Context, zone: String, deliveryDate: String, body: String) {
+    private fun showNotification(context: Context, deliveryDate: String, body: String) {
         ensureChannel(context)
         val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
