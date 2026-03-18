@@ -448,7 +448,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val noticeKey = "$deliveryDate|$zone"
         val lastShown = appPrefs.getString(KEY_LAST_ZONE_NOTICE, null)
         if (noticeKey == lastShown) return
-        val shown = showNextZoneNotification(zone, deliveryDate, notice.message?.takeIf { it.isNotBlank() })
+        val shown = showNextZoneNotification(zone, deliveryDate, notice?.message?.takeIf { it.isNotBlank() })
         if (shown) {
             appPrefs.edit().putString(KEY_LAST_ZONE_NOTICE, noticeKey).apply()
         }
