@@ -2,8 +2,6 @@ package com.distriar.driver
 
 import android.Manifest
 import android.app.Activity
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -17,8 +15,6 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.IntentSenderRequest
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -51,16 +47,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
-    companion object {
-        private const val NEXT_ZONE_CHANNEL_ID = "next_zone_notice"
-        private const val NEXT_ZONE_NOTIFICATION_ID = 4101
-        private const val KEY_LAST_ZONE_NOTICE = "last_zone_notice"
-    }
-
     private lateinit var binding: ActivityMainBinding
     private lateinit var tokenStore: TokenStore
     private lateinit var repo: DriverRepository
@@ -93,7 +81,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var currentMode: Mode = Mode.ROUTE
 
     private var currentOrders: List<Order> = emptyList()
-    private val appPrefs by lazy { getSharedPreferences("driver_prefs", MODE_PRIVATE) }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -172,7 +159,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mapFragment.getMapAsync(this)
 
         locationClient = LocationServices.getFusedLocationProviderClient(this)
-        ensureNotificationChannel()
+        NextZoneNotifier.ensureChannel(this)
 
         ensureLoggedIn()
         checkMapsAvailability()
@@ -202,6 +189,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun ensureLoggedIn() {
         val token = tokenStore.getToken()
         if (token.isNullOrBlank()) {
+            NextZoneWorkScheduler.cancel(this)
             goToLogin()
             return
         }
@@ -218,12 +206,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
                 }
                 if (me.role.lowercase() != "repartidor") {
                     tokenStore.clear()
+                    NextZoneWorkScheduler.cancel(this@MainActivity)
                     goToLogin()
                 } else {
+                    NextZoneWorkScheduler.schedule(this@MainActivity)
                     loadOrders(force = true)
                 }
             } catch (e: Exception) {
                 tokenStore.clear()
+                NextZoneWorkScheduler.cancel(this@MainActivity)
                 goToLogin()
             }
         }
@@ -237,6 +228,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private fun logout() {
         sendOfflineSignal()
         tokenStore.clear()
+        NextZoneWorkScheduler.cancel(this)
         stopLocationUpdates()
         autoRefreshJob?.cancel()
         autoRefreshJob = null
@@ -443,15 +435,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val formattedDate = formatZoneDate(deliveryDate)
         binding.nextDayZoneNotice.text = "Zona asignada para $formattedDate: $zone"
         binding.nextDayZoneNotice.visibility = View.VISIBLE
-
-        if (!isTomorrow(deliveryDate)) return
-        val noticeKey = "$deliveryDate|$zone"
-        val lastShown = appPrefs.getString(KEY_LAST_ZONE_NOTICE, null)
-        if (noticeKey == lastShown) return
-        val shown = showNextZoneNotification(zone, deliveryDate, notice?.message?.takeIf { it.isNotBlank() })
-        if (shown) {
-            appPrefs.edit().putString(KEY_LAST_ZONE_NOTICE, noticeKey).apply()
-        }
+        NextZoneNotifier.maybeNotify(this, notice)
     }
 
     private fun ensureNotificationPermission() {
@@ -462,52 +446,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
-    private fun ensureNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val channel = NotificationChannel(
-            NEXT_ZONE_CHANNEL_ID,
-            "Zona siguiente",
-            NotificationManager.IMPORTANCE_DEFAULT,
-        ).apply {
-            description = "Avisos sobre la zona asignada para el día siguiente"
-        }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.createNotificationChannel(channel)
-    }
-
-    private fun showNextZoneNotification(zone: String, deliveryDate: String, body: String?): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-            if (!granted) return false
-        }
-        val text = body ?: "Mañana te toca la zona $zone."
-        val notification = NotificationCompat.Builder(this, NEXT_ZONE_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_map)
-            .setContentTitle("Zona del día siguiente")
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$text Fecha: ${formatZoneDate(deliveryDate)}"))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(this).notify(NEXT_ZONE_NOTIFICATION_ID, notification)
-        return true
-    }
-
     private fun formatZoneDate(value: String): String {
-        return try {
-            val date = LocalDate.parse(value)
-            date.format(DateTimeFormatter.ofPattern("dd/MM"))
-        } catch (_: Exception) {
-            value
-        }
-    }
-
-    private fun isTomorrow(value: String): Boolean {
-        return try {
-            LocalDate.parse(value) == LocalDate.now().plusDays(1)
-        } catch (_: Exception) {
-            false
-        }
+        return NextZoneNotifier.formatZoneDate(value)
     }
 
     override fun onMapReady(map: GoogleMap) {

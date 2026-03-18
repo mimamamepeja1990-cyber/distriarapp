@@ -37,12 +37,15 @@ class LoginActivity : AppCompatActivity() {
             try {
                 val me = withContext(Dispatchers.IO) { repo.me(token) }
                 if (me.role.lowercase() == "repartidor" && me.isActive) {
+                    NextZoneWorkScheduler.schedule(this@LoginActivity)
                     goToMain()
                 } else {
                     tokenStore.clear()
+                    NextZoneWorkScheduler.cancel(this@LoginActivity)
                 }
             } catch (e: Exception) {
                 tokenStore.clear()
+                NextZoneWorkScheduler.cancel(this@LoginActivity)
             }
         }
     }
@@ -62,11 +65,14 @@ class LoginActivity : AppCompatActivity() {
                 val me = withContext(Dispatchers.IO) { repo.me(token.accessToken) }
                 if (me.role.lowercase() != "repartidor") {
                     tokenStore.clear()
+                    NextZoneWorkScheduler.cancel(this@LoginActivity)
                     showError("Este usuario no es repartidor")
                 } else if (!me.isActive) {
                     tokenStore.clear()
+                    NextZoneWorkScheduler.cancel(this@LoginActivity)
                     showError("Usuario desactivado")
                 } else {
+                    NextZoneWorkScheduler.schedule(this@LoginActivity)
                     goToMain()
                 }
             } catch (e: Exception) {

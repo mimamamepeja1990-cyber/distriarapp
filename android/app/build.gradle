@@ -18,7 +18,9 @@ android {
         buildConfigField 'String', 'BASE_URL', '"https://backend-0lcs.onrender.com/"'
 
         // Google Maps SDK key injected from gradle.properties
-        manifestPlaceholders = [MAPS_API_KEY: (project.findProperty('MAPS_API_KEY') ?: '')]
+        def mapsKey = project.findProperty('MAPS_API_KEY') ?: ''
+        resValue 'string', 'google_maps_key', mapsKey
+        manifestPlaceholders = [MAPS_API_KEY: mapsKey]
     }
 
     buildTypes {
@@ -27,7 +29,7 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
-            applicationIdSuffix '.debug'
+            // Keep the same applicationId for debug so the Maps API key restrictions match.
         }
     }
 
@@ -56,6 +58,7 @@ dependencies {
 
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.2'
     implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2'
+    implementation 'androidx.work:work-runtime-ktx:2.11.1'
 
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 
