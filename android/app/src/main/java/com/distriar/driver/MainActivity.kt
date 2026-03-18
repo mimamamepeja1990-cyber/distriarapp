@@ -2,18 +2,28 @@ package com.distriar.driver
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.location.Location
+import android.os.Build
 import android.os.Bundle
+import android.text.InputType
+import android.view.View
+import android.widget.EditText
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.IntentSenderRequest
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.distriar.driver.databinding.ActivityMainBinding
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
@@ -40,8 +50,17 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
+    companion object {
+        private const val NEXT_ZONE_CHANNEL_ID = "next_zone_notice"
+        private const val NEXT_ZONE_NOTIFICATION_ID = 4101
+        private const val KEY_LAST_ZONE_NOTICE = "last_zone_notice"
+    }
+
     private lateinit var binding: ActivityMainBinding
     private lateinit var tokenStore: TokenStore
     private lateinit var repo: DriverRepository
@@ -63,6 +82,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var lastCameraTarget: LatLng? = null
     private var lastCameraUpdateAt = 0L
     private var offlineSent = false
+    private var pendingClosedOrder: Order? = null
 
     private lateinit var locationClient: FusedLocationProviderClient
     private var locationCallback: LocationCallback? = null
@@ -73,6 +93,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var currentMode: Mode = Mode.ROUTE
 
     private var currentOrders: List<Order> = emptyList()
+    private val appPrefs by lazy { getSharedPreferences("driver_prefs", MODE_PRIVATE) }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -96,6 +117,23 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         }
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
+    private val closedPhotoLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        val order = pendingClosedOrder
+        pendingClosedOrder = null
+        if (order == null) return@registerForActivityResult
+        if (bitmap == null) {
+            Toast.makeText(this, "No se tomó la foto del negocio cerrado", Toast.LENGTH_SHORT).show()
+            return@registerForActivityResult
+        }
+        uploadClosedPhoto(order, bitmap)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -105,9 +143,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         val api = ApiClient.create { tokenStore.getToken() }
         repo = DriverRepository(api)
 
-        adapter = OrderAdapter(emptyList()) { order ->
-            markDelivered(order)
-        }
+        adapter = OrderAdapter(
+            emptyList(),
+            onDelivered = { order -> markDelivered(order) },
+            onIssue = { order -> openIssueDialog(order) },
+        )
         binding.ordersList.layoutManager = LinearLayoutManager(this)
         binding.ordersList.adapter = adapter
         binding.ordersList.setHasFixedSize(true)
@@ -132,6 +172,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         mapFragment.getMapAsync(this)
 
         locationClient = LocationServices.getFusedLocationProviderClient(this)
+        ensureNotificationChannel()
 
         ensureLoggedIn()
         checkMapsAvailability()
@@ -141,6 +182,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         super.onStart()
         startAutoRefresh()
         ensureLocationPermission()
+        ensureNotificationPermission()
     }
 
     override fun onStop() {
@@ -239,17 +281,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         loading = true
         lifecycleScope.launch {
             try {
-                val orders = withContext(Dispatchers.IO) {
-                    when (currentMode) {
+                val payload = withContext(Dispatchers.IO) {
+                    val notice = runCatching { repo.getNextZoneNotice(token) }.getOrNull()
+                    val orders = when (currentMode) {
                         Mode.ROUTE -> repo.listRouteOrders(token)
                         Mode.HISTORY -> repo.listDeliveredOrders(token)
                     }
+                    Pair(orders, notice)
                 }
-                val displayOrders = if (currentMode == Mode.ROUTE) {
-                    orders.filter { !orderIsDelivered(it) }
-                } else {
-                    orders
-                }
+                val orders = payload.first
+                applyNextZoneNotice(payload.second)
+                val displayOrders = if (currentMode == Mode.ROUTE) orders.filter { !orderIsDelivered(it) } else orders
                 currentOrders = displayOrders
                 val nextOrder = displayOrders.firstOrNull()
                 val nextId = nextOrder?.id
@@ -303,6 +345,168 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "No se pudo marcar entregado", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    private fun openIssueDialog(order: Order) {
+        val options = if ((order.closedAttempts ?: 0) > 0) {
+            arrayOf("Dejar problema", "Marcar cerrado nuevamente")
+        } else {
+            arrayOf("Dejar problema", "Marcar negocio cerrado")
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Incidencia en pedido #${order.id}")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> promptProblemDetail(order)
+                    1 -> captureClosedOrder(order)
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun promptProblemDetail(order: Order) {
+        val input = EditText(this).apply {
+            hint = "Ej: Calle cortada por arreglos"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+            maxLines = 5
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Describí el problema")
+            .setView(input)
+            .setPositiveButton("Enviar") { _, _ ->
+                val note = input.text?.toString()?.trim().orEmpty()
+                if (note.isBlank()) {
+                    Toast.makeText(this, "Escribí el problema antes de enviar", Toast.LENGTH_SHORT).show()
+                } else {
+                    submitProblem(order, note)
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun submitProblem(order: Order, note: String) {
+        val token = tokenStore.getToken() ?: return
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { repo.reportProblem(token, order.id, note) }
+                Toast.makeText(this@MainActivity, "Problema reportado al admin", Toast.LENGTH_SHORT).show()
+                loadOrders(force = true)
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "No se pudo reportar el problema", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun captureClosedOrder(order: Order) {
+        pendingClosedOrder = order
+        closedPhotoLauncher.launch(null)
+    }
+
+    private fun uploadClosedPhoto(order: Order, bitmap: Bitmap) {
+        val token = tokenStore.getToken() ?: return
+        lifecycleScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val stream = ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                    val bytes = stream.toByteArray()
+                    val filename = "pedido-${order.id}-cerrado-${System.currentTimeMillis()}.jpg"
+                    val uploaded = repo.uploadEvidence(bytes, filename)
+                    repo.markBusinessClosed(token, order.id, uploaded.imageUrl)
+                }
+                val action = result.action?.trim().orEmpty()
+                val message = when (action) {
+                    "moved_to_end" -> "Marcado como cerrado. Lo movimos al final de la ruta."
+                    "cancelled" -> "Pedido cancelado. Se avisó al cliente por email."
+                    else -> "Incidencia de cerrado registrada."
+                }
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                loadOrders(force = true)
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "No se pudo registrar el negocio cerrado", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun applyNextZoneNotice(notice: DriverNextZoneNotice?) {
+        val zone = notice?.zone?.trim().orEmpty()
+        val deliveryDate = notice?.deliveryDate?.trim().orEmpty()
+        if (zone.isBlank() || deliveryDate.isBlank()) {
+            binding.nextDayZoneNotice.visibility = View.GONE
+            binding.nextDayZoneNotice.text = ""
+            return
+        }
+        val formattedDate = formatZoneDate(deliveryDate)
+        binding.nextDayZoneNotice.text = "Zona asignada para $formattedDate: $zone"
+        binding.nextDayZoneNotice.visibility = View.VISIBLE
+
+        if (!isTomorrow(deliveryDate)) return
+        val noticeKey = "$deliveryDate|$zone"
+        val lastShown = appPrefs.getString(KEY_LAST_ZONE_NOTICE, null)
+        if (noticeKey == lastShown) return
+        val shown = showNextZoneNotification(zone, deliveryDate, notice.message?.takeIf { it.isNotBlank() })
+        if (shown) {
+            appPrefs.edit().putString(KEY_LAST_ZONE_NOTICE, noticeKey).apply()
+        }
+    }
+
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val channel = NotificationChannel(
+            NEXT_ZONE_CHANNEL_ID,
+            "Zona siguiente",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Avisos sobre la zona asignada para el día siguiente"
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.createNotificationChannel(channel)
+    }
+
+    private fun showNextZoneNotification(zone: String, deliveryDate: String, body: String?): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            if (!granted) return false
+        }
+        val text = body ?: "Mañana te toca la zona $zone."
+        val notification = NotificationCompat.Builder(this, NEXT_ZONE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_map)
+            .setContentTitle("Zona del día siguiente")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$text Fecha: ${formatZoneDate(deliveryDate)}"))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(this).notify(NEXT_ZONE_NOTIFICATION_ID, notification)
+        return true
+    }
+
+    private fun formatZoneDate(value: String): String {
+        return try {
+            val date = LocalDate.parse(value)
+            date.format(DateTimeFormatter.ofPattern("dd/MM"))
+        } catch (_: Exception) {
+            value
+        }
+    }
+
+    private fun isTomorrow(value: String): Boolean {
+        return try {
+            LocalDate.parse(value) == LocalDate.now().plusDays(1)
+        } catch (_: Exception) {
+            false
         }
     }
 

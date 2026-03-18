@@ -5,10 +5,13 @@ import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.Multipart
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Part
 import retrofit2.http.Query
+import okhttp3.MultipartBody
 
 interface ApiService {
     @FormUrlEncoded
@@ -35,6 +38,24 @@ interface ApiService {
         @Path("id") id: Int,
         @Body body: StatusUpdate,
     ): Order
+
+    @POST("/orders/{id}/delivery-issue")
+    suspend fun createDeliveryIssue(
+        @Header("Authorization") auth: String,
+        @Path("id") id: Int,
+        @Body body: DeliveryIssueRequest,
+    ): DeliveryIssueResult
+
+    @Multipart
+    @POST("/upload-image")
+    suspend fun uploadImage(
+        @Part file: MultipartBody.Part,
+    ): ImageUploadResponse
+
+    @GET("/admin/driver-next-zone")
+    suspend fun getDriverNextZone(
+        @Header("Authorization") auth: String,
+    ): DriverNextZoneNotice
 
     @POST("/admin/driver-location")
     suspend fun postDriverLocation(

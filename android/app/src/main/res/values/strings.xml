@@ -9,10 +9,12 @@
     <string name="route_title">Ruta del día</string>
     <string name="history_title">Historial</string>
     <string name="mark_delivered">Marcar entregado</string>
+    <string name="report_issue">Incidencia</string>
     <string name="delivered">Entregado</string>
     <string name="refresh">Actualizar</string>
     <string name="logout_action">Cerrar sesión</string>
     <string name="next_stop">Siguiente entrega</string>
     <string name="no_orders">No hay pedidos asignados</string>
     <string name="all_deliveries_done">Terminaste todas las entregas</string>
+    <string name="next_day_zone_title">Zona de mañana</string>
 </resources>
