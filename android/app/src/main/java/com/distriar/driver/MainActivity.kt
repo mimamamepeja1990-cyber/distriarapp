@@ -46,6 +46,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback {
@@ -76,7 +82,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
     private var locationCallback: LocationCallback? = null
     private var lastLocationSentAt = 0L
 
-    private var autoRefreshJob: Job? = null
+    private var realtimeSocket: WebSocket? = null
+    private var realtimeRetryJob: Job? = null
+    private var realtimeRetryAttempt = 0
+    private var realtimeShouldRun = false
     private var loading = false
     private var currentMode: Mode = Mode.ROUTE
 
@@ -167,16 +176,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
 
     override fun onStart() {
         super.onStart()
-        startAutoRefresh()
+        realtimeShouldRun = true
+        startRealtimeUpdates()
         ensureLocationPermission()
         ensureNotificationPermission()
     }
 
     override fun onStop() {
         super.onStop()
+        realtimeShouldRun = false
         stopLocationUpdates()
-        autoRefreshJob?.cancel()
-        autoRefreshJob = null
+        stopRealtimeUpdates()
     }
 
     override fun onDestroy() {
@@ -230,8 +240,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         tokenStore.clear()
         NextZoneWorkScheduler.cancel(this)
         stopLocationUpdates()
-        autoRefreshJob?.cancel()
-        autoRefreshJob = null
+        stopRealtimeUpdates()
         goToLogin()
     }
 
@@ -255,15 +264,61 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback {
         loadOrders(force = true)
     }
 
-    private fun startAutoRefresh() {
-        if (autoRefreshJob != null) return
-        autoRefreshJob = lifecycleScope.launch {
-            while (true) {
-                delay(20000)
-                if (currentMode == Mode.ROUTE) {
-                    loadOrders(force = false)
-                }
+    private fun startRealtimeUpdates() {
+        if (!realtimeShouldRun || realtimeSocket != null || tokenStore.getToken().isNullOrBlank()) return
+        val base = BuildConfig.BASE_URL.trimEnd('/')
+        val wsBase = when {
+            base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+            base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+            else -> return
+        }
+        val request = Request.Builder().url("$wsBase/ws/products").build()
+        val client = OkHttpClient.Builder().build()
+        realtimeSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                realtimeRetryAttempt = 0
+                webSocket.send("{\"topics\":[\"order\"],\"since\":0}")
             }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    val event = JSONObject(text)
+                    val action = event.optString("action").lowercase()
+                    val type = event.optString("type").lowercase()
+                    if (action.startsWith("order") || type.startsWith("order.")) {
+                        runOnUiThread { if (currentMode == Mode.ROUTE) loadOrders(force = false) }
+                    }
+                } catch (_: Exception) { }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (realtimeSocket == webSocket) realtimeSocket = null
+                scheduleRealtimeReconnect()
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (realtimeSocket == webSocket) realtimeSocket = null
+                scheduleRealtimeReconnect()
+            }
+        })
+    }
+
+    private fun stopRealtimeUpdates() {
+        realtimeShouldRun = false
+        realtimeRetryJob?.cancel()
+        realtimeRetryJob = null
+        realtimeSocket?.close(1000, "screen_stopped")
+        realtimeSocket = null
+    }
+
+    private fun scheduleRealtimeReconnect() {
+        if (!realtimeShouldRun || isFinishing || realtimeRetryJob != null) return
+        realtimeRetryAttempt += 1
+        val delayMs = minOf(60_000L, maxOf(1_000L, (1_000L * Math.pow(1.6, minOf(realtimeRetryAttempt, 8).toDouble())).toLong()))
+        realtimeRetryJob = lifecycleScope.launch {
+            delay(delayMs)
+            realtimeRetryJob = null
+            startRealtimeUpdates()
         }
     }
 
