@@ -11,14 +11,16 @@ android {
         applicationId 'com.distriar.driver'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.1'
 
-        // Backend base URL
-        buildConfigField 'String', 'BASE_URL', '"https://backend-0lcs.onrender.com/"'
+        // Override with -PBACKEND_URL=... or the BACKEND_URL environment variable.
+        def backendUrl = project.findProperty('BACKEND_URL') ?: System.getenv('BACKEND_URL') ?: 'https://backend-0lcs.onrender.com/'
+        def escapedBackendUrl = backendUrl.toString().replace('\\', '\\\\').replace('"', '\\"')
+        buildConfigField 'String', 'BASE_URL', '"' + escapedBackendUrl + '"'
 
-        // Google Maps SDK key injected from gradle.properties
-        def mapsKey = project.findProperty('MAPS_API_KEY') ?: ''
+        // Keep the key out of the repository. Override with -PMAPS_API_KEY=... or MAPS_API_KEY.
+        def mapsKey = project.findProperty('MAPS_API_KEY') ?: System.getenv('MAPS_API_KEY') ?: ''
         resValue 'string', 'google_maps_key', mapsKey
         manifestPlaceholders = [MAPS_API_KEY: mapsKey]
     }
